@@ -35,10 +35,8 @@ proc ::AtomselectExtra::make_proc { molid selection_text } {
 
     set procname ::atomselect_extra$as_id
 
-    ## Create an atomselection and globalize it
-    ## Link into the created proc
-    set as_lookup($procname) [atomselect $molid $selection_text]
-    $as_lookup($procname) global
+    ## Make the selection
+    make_sel $molid $selection_text $procname
 
     ## IDs associated with the selection
     set ids [$as_lookup($procname) list]
@@ -92,7 +90,7 @@ proc ::AtomselectExtra::make_proc { molid selection_text } {
     ## Pass through to linked atomselection for compatibility
     set cmd [concat $cmd "default \{return \[\$sel \{\*\}\$args\]\}\n"]
 
-    ## Terminate the proc
+    ## Close the switch
     set cmd [concat $cmd "\};\n"]
 
     ## Close the proc body
@@ -210,6 +208,78 @@ proc ::AtomselectExtra::delproperty {field_name {molid all}} {
         }
     }
 }
+
+## Just a wrapper to get properties
+proc ::AtomselectExtra::getproperty {molid prop} {
+
+    variable atom_props 
+    variable atom_props_list
+
+    ## Make sure the requested property is defined
+    if {[lsearch -ascii -exact $atom_props_list $prop] == -1} {
+	vmdcon -err "Property $prop undefined for mol $molid"
+    }    
+
+    ## return properties
+    return atom_props([list $molid $prop])
+}
+
+
+proc ::AtomselectExtra::make_sel { molid seltext procname } {
+
+    variable atom_props 
+    variable atom_props_list
+    variable as_lookup
+
+    ## Fields that can be used for temporary
+    ## swapping to do selections
+    set swap_fields_char {segname name type}
+    set swap_fields_num {user user2 user3 user4 vx vy vz}
+    set swap_fields_all [concat $swap_fields_char $swap_fields_num]
+
+    ## Check if the selection text has any of the
+    ## user-defined keywords
+    set custom_keys {}
+    foreach p $atom_props_list {
+	if {[string match "*$p*" $seltext]} {
+	    lappend custom_keys $p
+	}
+    }
+
+    ## If we don't have any custom keys
+    ## just make the selection
+    if {[llength $custom_keys] == 0} {
+	## Create an atomselection and globalize it
+	## Link into the created proc
+	set as_lookup($procname) [atomselect $molid $selection_text]
+	$as_lookup($procname) global
+    }
+
+    ## Unfortunately, we're going to be limited in the
+    ## number of swaps we can do into unused fields
+    ## and those fields with matching data types
+    
+    ## Check if any of the swappable fields are
+    ## being used in this instance, remove them
+    ## from the list
+
+    set active_swaps {}
+    foreach sf $swap_fields_all {
+	if {![string match "*$sf*" $seltext]} {
+	    lappend  $active_swaps $sf
+	}
+    }
+
+    foreach p $custom_keys {
+
+	
+
+
+    }
+    
+
+}
+
 
 proc ::AtomselectExtra::__set {molid sel index keys values} {
 
