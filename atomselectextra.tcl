@@ -1,5 +1,5 @@
-# Stop atomselect from sucking
-#Copyright (c) 2013 Chris MacDermaid <chris.macdermaid@gmail.com>
+## Stop atomselect from sucking
+## Copyright (c) 2013 Chris MacDermaid <chris.macdermaid@gmail.com>
 
 namespace eval ::AtomselectExtra:: {
 
@@ -9,11 +9,14 @@ namespace eval ::AtomselectExtra:: {
     variable as_id
     variable atom_props
     variable atom_props_list
+    variable reserved_keywords
 
     array set as_lookup {}
     array set atom_props {}
     set atom_props_list {}
     set as_id 0
+
+    set reserved_keywords [atomselect keywords]
 
     namespace export AtomselectExtra
 }
@@ -68,12 +71,13 @@ proc ::AtomselectExtra::make_proc { molid selection_text } {
 
     ## Return the associated selection
     ## so things like [$sel sel] get {x y z} can work if needed
+    ## completely bypassing the extra routines
     set cmd [concat $cmd "sel \{return \$sel\}\n"]
 
     ## Copy the atributes from one to the other within the specified molecule
     ## The traditional $sel set {x y z} [$sel get {x y z}] for between molecules
     ## still works as intended
-    set cmd [concat $cmd "copy \{::AtomselectExtra::__set \$molid \$sel ids \[lindex \$args 2 \] \[::AtomselectExtra::get \$molid \$sel ids \[lindex \$args 1\]\]\}\n"]
+    set cmd [concat $cmd "copy \{::AtomselectExtra::__set \$molid \$sel ids \[lindex \$args 2 \] \[::AtomselectExtra::__get \$molid \$sel ids \[lindex \$args 1\]\]\}\n"]
 
     ## Swap attributes {x y z} {z y x} == x = z, y = y, z = x
     set cmd [concat $cmd "swap \{::AtomselectExtra::__swap \$myname \[lindex \$args 1\] \[lindex \$args 2\]\}\n"]
@@ -137,10 +141,18 @@ proc ::AtomselectExtra::__delete {myname molid} {
 ## Add a field to associated atom properties
 ## The fields are mol and property dependent
 ## and are stored in atom_props([list molid property])
-proc ::AtomselectExtra::addproperty {field_name {molid all}} {
+proc ::AtomselectExtra::addproperty {field_name {molid all} {val 0.0}} {
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
+    variable reserved_keywords
+
+    ## make sure the property the user wants to create isn't
+    ## already a vmd-defined property
+    if {[lsearch -ascii -exact $reserved_keywords $field_name] >= 0} {
+        vmdcon -err "$field_name is used by VMD"
+        return 1
+    }
 
     ## If user doesn't specify, create for all loaded mols
     if {$molid == "all"} {set molid [molinfo list]}
@@ -156,6 +168,7 @@ proc ::AtomselectExtra::addproperty {field_name {molid all}} {
     ## exist for each loaded mol
     foreach mol $molid {
         foreach name $field_name {
+
             # Array Key Name
             set key [list $mol $name]
 
@@ -165,8 +178,8 @@ proc ::AtomselectExtra::addproperty {field_name {molid all}} {
                 ## Get the number of atoms per mol
                 set natoms [molinfo $mol get numatoms]
 
-                ## Create a property list, initialize it to all zeros
-                set atom_props($key) [lrepeat $natoms 0]
+                ## Initialize the values to user specified values
+                setproperty $mol $name $val
             }
         }
     }
@@ -174,7 +187,7 @@ proc ::AtomselectExtra::addproperty {field_name {molid all}} {
 
 proc ::AtomselectExtra::delproperty {field_name {molid all}} {
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
 
     ## If user doesn't specify, destroy propertes
@@ -212,72 +225,174 @@ proc ::AtomselectExtra::delproperty {field_name {molid all}} {
 ## Just a wrapper to get properties
 proc ::AtomselectExtra::getproperty {molid prop} {
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
 
     ## Make sure the requested property is defined
     if {[lsearch -ascii -exact $atom_props_list $prop] == -1} {
-	vmdcon -err "Property $prop undefined for mol $molid"
-    }    
+        vmdcon -err "Property $prop undefined for mol $molid"
+        return 1
+    }
+
+    if {$molid == "top"} {
+        set molid [molinfo top]
+    }
 
     ## return properties
-    return atom_props([list $molid $prop])
+    return $atom_props([list $molid $prop])
 }
 
+## A wrapper to set properties without using an atomselection
+proc ::AtomselectExtra::setproperty {molid prop val} {
+
+    variable atom_props
+    variable atom_props_list
+
+    ## Make sure the requested property is defined
+    if {[lsearch -ascii -exact $atom_props_list $prop] == -1} {
+        vmdcon -err "Property $prop undefined for mol $molid"
+        return 1
+    }
+
+    if {$molid == "top"} {
+        set molid [molinfo top]
+    }
+
+    set n [llength $atom_props([list $molid $prop])]
+
+    ## set properties either as a user specified list or 
+    ## a single value
+    if {[llength $val] == $n} {
+        
+        set atom_props([list $molid $prop]) $prop
+    
+    } elseif {[llength $val] == 1} {
+
+        set atom_props([list $molid $prop]) [lrepeat $n $val]
+        
+    } else {
+
+        ## Whoops, display usage
+        usage
+        return 1
+    }
+}
 
 proc ::AtomselectExtra::make_sel { molid seltext procname } {
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
     variable as_lookup
 
+    if {$molid == "top"} {
+        set molid [molinfo top]
+    }
+
     ## Fields that can be used for temporary
     ## swapping to do selections
-    set swap_fields_char {segname name type}
-    set swap_fields_num {user user2 user3 user4 vx vy vz}
-    set swap_fields_all [concat $swap_fields_char $swap_fields_num]
+    set swap_fields(float) {user user2 user3 user4 vx vy vz}
+    set swap_fields(char) {segname name type}
 
     ## Check if the selection text has any of the
     ## user-defined keywords
     set custom_keys {}
     foreach p $atom_props_list {
-	if {[string match "*$p*" $seltext]} {
-	    lappend custom_keys $p
-	}
+        if {[string match "*$p*" $seltext]} {
+            lappend custom_keys $p
+        }
     }
 
     ## If we don't have any custom keys
     ## just make the selection
     if {[llength $custom_keys] == 0} {
-	## Create an atomselection and globalize it
-	## Link into the created proc
-	set as_lookup($procname) [atomselect $molid $selection_text]
-	$as_lookup($procname) global
+        ## Create an atomselection and globalize it
+        ## Link into the created proc
+        set as_lookup($procname) [atomselect $molid $seltext]
+        $as_lookup($procname) global
+        return
     }
 
     ## Unfortunately, we're going to be limited in the
     ## number of swaps we can do into unused fields
     ## and those fields with matching data types
-    
+
     ## Check if any of the swappable fields are
     ## being used in this instance, remove them
-    ## from the list
+    ## from the fields to use
 
     set active_swaps {}
-    foreach sf $swap_fields_all {
-	if {![string match "*$sf*" $seltext]} {
-	    lappend  $active_swaps $sf
-	}
+    foreach {type field} [array get swap_fields *] {
+        foreach p $field {
+            # If the property is being used, remove it
+            # from the list
+            if {[string match "*$p$" $seltext]} {
+                set idx [lsearch -strict -ascii $swap_fields $p]
+                set $swap_fields($type) [lreplace $swap_fields($type) $idx $idx]
+            }
+        }
     }
+
+    ## Make sure we actually have fields left to use
+    #foreach {type field} [array get swap_fields *] {
+    #   if {[llength $field] < 1} {
+    #       vmdcon -err "No remaining temporary fields to swap. Decrease atomselection complexity"
+    #       return 1
+    #   }
+    #}
 
     foreach p $custom_keys {
 
-	
+        ## Get the first data point for the specified property
+        set ff [lindex $atom_props([list $molid $p]) 0]
 
+        ## Determine data type of fields and create map
+        set swapmap {}
+        if {([string is alpha $ff] || [string is alnum $ff])
+            && [llength $swap_fields(char)] > 0} {
 
+            lappend swapmap [list $p [lindex $swap_fields(char) 0]]
+            set $swap_fields(char) [lreplace $swap_fields(char) 0 0]
+
+        } elseif {([string is double $ff] || [string is integer $ff])
+                  && [llength $swap_fields(float)] > 0} {
+
+            lappend swapmap [list $p [lindex $swap_fields(float) 0]]
+            set $swap_fields(float) [lreplace $swap_fields(float) 0 0]
+
+        } else {
+            vmdcon -err "Check your atom properties or reduce your atomselection complexity"
+        }
     }
-    
 
+    ## Make a temporary selection for everything
+    set sel [atomselect $molid "all"]
+
+    ## Make a copy of the selection text
+    set seltext2 $seltext
+
+    ## Perform the swaps
+    foreach x $swapmap {
+
+        lassign $x from to
+
+        set temp($to) [$sel get $to]
+        $sel set $to $atom_props([list $molid $from])
+
+        ## Substitute fields into atomselection text
+        regsub -all "(?b)\\<$from\\>" $seltext2 $to seltext2
+    }
+
+    ## Make the real selection
+    set as_lookup($procname) [atomselect $molid $seltext2]
+    $as_lookup($procname) global
+
+    ## Replace the data
+    foreach x $swapmap {
+        lassign $x from to
+        $sel set $to $temp($to)
+    }
+
+    $sel delete
 }
 
 
@@ -286,7 +401,7 @@ proc ::AtomselectExtra::__set {molid sel index keys values} {
     ## Check to see if any keys are in the
     ## atom_props_list
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
 
     ## Pass ids by reference since they can be large
@@ -371,6 +486,7 @@ proc ::AtomselectExtra::__set {molid sel index keys values} {
         vmdcon -err "atomselect_extra set: [llength $values] data items doesn't match [$sel num] selected atoms"
     } else {
         vmdcom -err "This shouldn't happen: Shoot the programmer?"
+        return 1
     }
 }
 
@@ -379,7 +495,7 @@ proc ::AtomselectExtra::__get {molid sel index keys} {
     ## Similar to set, first we check if the
     ## user requested any special fields
 
-    variable atom_props 
+    variable atom_props
     variable atom_props_list
 
     ## Pass ids by reference since they can be large
@@ -457,6 +573,27 @@ proc ::AtomselectExtra::__swap {myname p1 p2} {
     # Set
     uplevel #0 [list $myname set $p2 $ptemp]
 }
+
+proc ::AtomselectExtra::keywords {} {
+
+    variable reserved_keywords
+    variable atom_props_list
+
+    return [concat $reserved_keywords $atom_props_list]
+}
+
+proc ::AtomselectExtra::__list {} {
+
+    variable as_lookup
+    
+    set aslist {}
+    foreach {key val} [array get as_lookup *] {
+        lappend aslist $key
+    }
+
+    return [lsort -unique $aslist]
+}
+
 
 proc ::AtomselectExtra::cleanup {} {
 
