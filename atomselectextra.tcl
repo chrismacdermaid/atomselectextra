@@ -111,8 +111,10 @@ proc ::AtomselectExtra::make_proc { molid selection_text } {
     trace var ::atomselect_extra$as_id wu [list ::atomselect_extra$as_id delete]
     trace var ::vmd_molecule($molid) wu [list ::atomselect_extra$as_id delete]
 
+    incr as_id
+
     ## Return name of proc
-    return "::atomselect_extra$as_id"
+    return $procname
 }
 
 ## Kill the associated atomselection,
@@ -175,9 +177,6 @@ proc ::AtomselectExtra::addproperty {field_name {molid all} {val 0.0}} {
             ## Check if this mol already has this property
             if {[array get atom_props $key] == ""} {
 
-                ## Get the number of atoms per mol
-                set natoms [molinfo $mol get numatoms]
-
                 ## Initialize the values to user specified values
                 setproperty $mol $name $val
             }
@@ -223,7 +222,7 @@ proc ::AtomselectExtra::delproperty {field_name {molid all}} {
 }
 
 ## Just a wrapper to get properties
-proc ::AtomselectExtra::getproperty {molid prop} {
+proc ::AtomselectExtra::getproperty {molid prop {ids all}} {
 
     variable atom_props
     variable atom_props_list
@@ -238,12 +237,26 @@ proc ::AtomselectExtra::getproperty {molid prop} {
         set molid [molinfo top]
     }
 
-    ## return properties
-    return $atom_props([list $molid $prop])
+    ## If the user wants everything, just return everything
+    if {$ids == "all"} {
+        ## return properties
+        return $atom_props([list $molid $prop])
+    }
+
+    ## Link to array element
+    upvar 0 atom_props([list $molid $prop]) p
+
+    ## Get the values based on the selected indices
+    set vals {}
+    foreach x $ids {
+        lappend vals [lindex $p $x]
+    }
+
+    return $vals
 }
 
 ## A wrapper to set properties without using an atomselection
-proc ::AtomselectExtra::setproperty {molid prop val} {
+proc ::AtomselectExtra::setproperty {molid prop val {ids all}} {
 
     variable atom_props
     variable atom_props_list
@@ -258,18 +271,37 @@ proc ::AtomselectExtra::setproperty {molid prop val} {
         set molid [molinfo top]
     }
 
-    set n [llength $atom_props([list $molid $prop])]
+    ## Get the number of atoms per mol
+    set natoms [molinfo $molid get numatoms]
 
-    ## set properties either as a user specified list or 
+    ## set properties either as a user specified list or
     ## a single value
-    if {[llength $val] == $n} {
-        
+    if {[llength $val] == $natoms && $ids == "all"} {
+
         set atom_props([list $molid $prop]) $prop
-    
+
+    } elseif {[llength $val] == 1 && $ids == "all"} {
+
+        set atom_props([list $molid $prop]) [lrepeat $natoms $val]
+
+    } elseif {[llength $val] == $natoms} {
+
+        ## Link to array element
+        upvar 0 atom_props([list $molid $prop]) p
+
+        foreach x ids y $ids {
+            lset $p $x $y
+        }
+
     } elseif {[llength $val] == 1} {
 
-        set atom_props([list $molid $prop]) [lrepeat $n $val]
-        
+        ## Link to array element
+        upvar 0 atom_props([list $molid $prop]) p
+
+        foreach x $ids {
+            lset $p $x $val
+        }
+
     } else {
 
         ## Whoops, display usage
@@ -531,14 +563,15 @@ proc ::AtomselectExtra::__get {molid sel index keys} {
 
     ## If the user specified only 1 attribute
     ## then get that and return it
-    if {[llength $keys] == 1} {return $atom_props([list $molid $keys])}
+    if {[llength $keys] == 1} {return [getproperty $molid $k $ids]}
 
     ## Get all the attributes in the order
     ## that the user specified
     set p {}
     foreach k $keys {
         if {$k in $custom_keys} {
-            lappend p $atom_props([list $molid $k])
+            #lappend p $atom_props([list $molid $k])
+            lappend p [getproperty $molid $k $ids]
         } else {
             lappend p [$sel get $k]
         }
@@ -585,7 +618,7 @@ proc ::AtomselectExtra::keywords {} {
 proc ::AtomselectExtra::__list {} {
 
     variable as_lookup
-    
+
     set aslist {}
     foreach {key val} [array get as_lookup *] {
         lappend aslist $key
@@ -594,7 +627,7 @@ proc ::AtomselectExtra::__list {} {
     return [lsort -unique $aslist]
 }
 
-
+## Cleanup unused properties
 proc ::AtomselectExtra::cleanup {} {
 
     global vmd_molecule
@@ -607,6 +640,20 @@ proc ::AtomselectExtra::cleanup {} {
             array unset atom_props "$key *"
         }
     }
+}
+
+## Clean up everything
+proc ::AtomselectExtra::veryclean {} {
+
+    variable atom_props
+    variable atom_props_list
+
+    foreach as [__list] {
+        uplevel #0 [list $as delete]
+    }
+
+    catch {array unset atom_props *}
+    set atom_props_list {}
 }
 
 # +------------------------------------------------+
