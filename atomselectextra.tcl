@@ -6,17 +6,18 @@ namespace eval ::AtomselectExtra:: {
     variable version 1.0
 
     variable as_lookup
-    variable as_id
+    variable as_id 0
     variable atom_props
     variable atom_props_list
     variable reserved_keywords
+    variable as_cmd atomselect
+    variable on 0
 
     array set as_lookup {}
     array set atom_props {}
     set atom_props_list {}
-    set as_id 0
 
-    set reserved_keywords [atomselect keywords]
+    set reserved_keywords [$as_cmd keywords]
 
     namespace export AtomselectExtra
 }
@@ -25,8 +26,91 @@ proc ::AtomselectExtra::usage {} {
 
 }
 
+# +-----------------------+
+# | Main frontend command |
+# +-----------------------+
+
 proc ::AtomselectExtra::atomselect_extra { args } {
 
+    set cmd ""
+
+    set newargs {}
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set arg [lindex $args $i]
+
+        if {[string match -?* $arg]} {
+
+            set val [lindex $args [expr {$i + 1}]]
+
+            switch -- $arg {
+                -on -
+                -off
+                {on_off $arg; return}
+
+                -clean
+                {cleanup; return}
+
+                -reset
+                {veryclean; return}
+
+                -- break
+
+                default {
+                    vmdcon -info "default: $arg"
+                }
+            }
+        } else {
+            lappend newargs $arg
+        }
+    }
+
+    set retval ""
+    if {[llength $newargs] > 0} {
+        set cmd [lindex $newargs 0]
+        set newargs [lrange $newargs 1 end]
+    } else {
+        set newargs {}
+        set cmd help
+    }
+
+    if { ![string equal $cmd help] } {
+    }
+
+    switch -- $cmd {
+
+        addproperty {
+            addproperty {*}$newargs; return
+        }
+
+        delproperty {
+            delproperty {*}$newargs; return
+        }
+
+        getproperty {
+            return [getproperty {*}$newargs]
+        }
+
+        help -
+        default {
+            usage
+        }
+    }
+
+    ## Compatibility commands with legacy atomselection
+    switch $cmd {
+        keywords {return [__keywords]}
+        symboltable {return [__symboltable]}
+        list {return [__list]}
+
+        default {
+            usage
+        }
+    }
+
+    ## Pass arguments to make proc
+    set retval [make_proc {*}$args]
+
+    return $retval
 }
 
 proc ::AtomselectExtra::make_proc { molid selection_text } {
@@ -156,6 +240,11 @@ proc ::AtomselectExtra::addproperty {field_name {molid all} {val 0.0}} {
         return 1
     }
 
+    if {[lsearch -ascii -exact $atom_props_list $field_name] >= 0} {
+        vmdcon -err "$field_name is already in use"
+        return 1
+    }
+
     ## If user doesn't specify, create for all loaded mols
     if {$molid == "all"} {set molid [molinfo list]}
 
@@ -179,6 +268,7 @@ proc ::AtomselectExtra::addproperty {field_name {molid all} {val 0.0}} {
 
                 ## Initialize the values to user specified values
                 setproperty $mol $name $val
+
             }
         }
     }
@@ -274,6 +364,9 @@ proc ::AtomselectExtra::setproperty {molid prop val {ids all}} {
     ## Get the number of atoms per mol
     set natoms [molinfo $molid get numatoms]
 
+    ## make sure the mol actually has atoms
+    if {$natoms == 0} {return}
+
     ## set properties either as a user specified list or
     ## a single value
     if {[llength $val] == $natoms && $ids == "all"} {
@@ -285,6 +378,7 @@ proc ::AtomselectExtra::setproperty {molid prop val {ids all}} {
         set atom_props([list $molid $prop]) [lrepeat $natoms $val]
 
     } elseif {[llength $val] == $natoms} {
+
 
         ## Link to array element
         upvar 0 atom_props([list $molid $prop]) p
@@ -315,6 +409,7 @@ proc ::AtomselectExtra::make_sel { molid seltext procname } {
     variable atom_props
     variable atom_props_list
     variable as_lookup
+    variable as_cmd
 
     if {$molid == "top"} {
         set molid [molinfo top]
@@ -339,7 +434,7 @@ proc ::AtomselectExtra::make_sel { molid seltext procname } {
     if {[llength $custom_keys] == 0} {
         ## Create an atomselection and globalize it
         ## Link into the created proc
-        set as_lookup($procname) [atomselect $molid $seltext]
+        set as_lookup($procname) [$as_cmd $molid $seltext]
         $as_lookup($procname) global
         return
     }
@@ -397,7 +492,7 @@ proc ::AtomselectExtra::make_sel { molid seltext procname } {
     }
 
     ## Make a temporary selection for everything
-    set sel [atomselect $molid "all"]
+    set sel [$as_cmd $molid "all"]
 
     ## Make a copy of the selection text
     set seltext2 $seltext
@@ -415,7 +510,7 @@ proc ::AtomselectExtra::make_sel { molid seltext procname } {
     }
 
     ## Make the real selection
-    set as_lookup($procname) [atomselect $molid $seltext2]
+    set as_lookup($procname) [$as_cmd $molid $seltext2]
     $as_lookup($procname) global
 
     ## Replace the data
@@ -607,7 +702,7 @@ proc ::AtomselectExtra::__swap {myname p1 p2} {
     uplevel #0 [list $myname set $p2 $ptemp]
 }
 
-proc ::AtomselectExtra::keywords {} {
+proc ::AtomselectExtra::__keywords {} {
 
     variable reserved_keywords
     variable atom_props_list
@@ -625,6 +720,13 @@ proc ::AtomselectExtra::__list {} {
     }
 
     return [lsort -unique $aslist]
+}
+
+proc ::AtomselectExtra::__symboltable {} {
+
+    variable as_cmd
+
+    return [$as_cmd symboltable]
 }
 
 ## Cleanup unused properties
@@ -675,6 +777,45 @@ proc ::AtomselectExtra::info:wholeproc procname {
     lappend result [list [info body $procname]]
     return [join $result]
 }
+
+# +---------------------------------------------+
+# | Toggle standard atomselect command with the |
+# | atomselect_extra command or vice versa.     |
+# +---------------------------------------------+
+
+proc ::AtomselectExtra::on_off {val} {
+
+    variable as_cmd
+    variable on
+
+    if {$val == "-off" && $on == 1} {
+        ## Delete atomselect command
+        rename ::atomselect ""
+
+        ## Return to legacy atomselect command
+        rename ::atomselect_legacy ::atomselect
+
+        set as_cmd ::atomselect
+        set on 0
+        return
+
+    } elseif {$val == "-on" && $on == 0} {
+
+        ## Rename atomselect command, keep atomselect_extra
+        rename ::atomselect ::atomselect_legacy
+        rename ::atomselect_extra ::atomselect
+        interp alias {} atomselect_extra {} ::AtomselectExtra::atomselect_extra
+        set as_cmd ::atomselect_legacy
+
+        set on 1
+
+    } else {
+
+        ## Do nothing
+    }
+
+}
+
 
 interp alias {} atomselect_extra {} ::AtomselectExtra::atomselect_extra
 package provide AtomselectExtra $::AtomselectExtra::version
